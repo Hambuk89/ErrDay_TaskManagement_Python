@@ -6,6 +6,9 @@ from datetime import date, datetime, timedelta
 import calendar
 import sqlite3
 import os
+import pystray
+from PIL import Image, ImageDraw
+from winotify import Notification, audio
 
 # ---------------- SETTINGS ----------------
 BG = "#F4F6FA"
@@ -86,6 +89,26 @@ def init_database():
                 duration_seconds INTEGER NOT NULL
             )
         """)
+
+        
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_notifications (
+                task_date TEXT NOT NULL,
+                task_time TEXT NOT NULL,
+                task_title TEXT NOT NULL,
+                task_category TEXT NOT NULL,
+                reminder_minutes INTEGER NOT NULL,
+                notified_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    task_date,
+                    task_time,
+                    task_title,
+                    task_category,
+                    reminder_minutes
+                )
+            )
+        """)
+
 
 
 
@@ -203,6 +226,89 @@ def styled_button(parent, text, command, primary=False):
         relief="flat", bd=0, cursor="hand2",
         padx=14, pady=9
     )
+
+
+# ---------------- WINDOWS NOTIFICATIONS ----------------
+
+def show_windows_notification(title, message):
+    notification = Notification(
+        app_id="ErrDay",
+        title=title,
+        msg=message,
+        duration="short",
+    )
+
+    notification.set_audio(
+        audio.Default,
+        loop=False,
+    )
+
+    notification.show()
+
+# ---------------- TASK START REMINDERS ----------------
+
+def send_task_reminder(task, reminder_minutes):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute("""
+            INSERT OR IGNORE INTO task_notifications (
+                task_date, task_time, task_title,
+                task_category, reminder_minutes, notified_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            task["date"],
+            task["time"],
+            task["title"],
+            task["category"],
+            reminder_minutes,
+            datetime.now().isoformat(timespec="seconds"),
+        ))
+
+        if cursor.rowcount == 0:
+            return
+
+    if reminder_minutes == 30:
+        message = f"{task['title']} starts in 30 minutes."
+    elif reminder_minutes == 15:
+        message = f"{task['title']} starts in 15 minutes."
+    else:
+        message = f"It's time to start: {task['title']}."
+
+    show_windows_notification("ErrDay - Task Reminder", message)
+
+# ---------------- TASK START REMINDERS ----------------
+
+def check_task_notifications():
+    now = datetime.now()
+    today_str = now.date().isoformat()
+
+    for task in tasks:
+        if task["done"] or not task["time"]:
+            continue
+
+        if task["date"] != today_str:
+            continue
+
+        try:
+            scheduled_time = datetime.strptime(
+                f"{task['date']} {task['time']}",
+                "%Y-%m-%d %H:%M",
+            )
+        except ValueError:
+            continue
+
+        for reminder_minutes in (30, 15):
+            reminder_time = scheduled_time - timedelta(
+                minutes=reminder_minutes
+            )
+
+            if reminder_time <= now < scheduled_time:
+                send_task_reminder(task, reminder_minutes)
+
+        if scheduled_time <= now < scheduled_time + timedelta(seconds=60):
+            send_task_reminder(task, 0)
+
+    root.after(15000, check_task_notifications)
 
 
 # ---------------- GLOBAL MOUSE WHEEL SCROLL ----------------
@@ -336,12 +442,14 @@ def delete_task(task):
         render()
 
 
+
 def task_card(parent, task):
     style = CATEGORY_STYLES.get(
         task["category"],
         CATEGORY_STYLES["Study"]
     )
-    
+
+    # Main task card
     item = tk.Frame(
         parent,
         bg=style["background"],
@@ -350,41 +458,76 @@ def task_card(parent, task):
         highlightbackground=style["background"],
         highlightthickness=1
     )
-    
+
     item.pack(fill="x", pady=5)
 
+    # Top row: completion, title, Edit and Delete buttons
     top = tk.Frame(item, bg=style["background"])
     top.pack(fill="x")
 
+    # Complete / incomplete button
     tk.Button(
         top,
         text="✓" if task["done"] else "○",
         command=lambda t=task: toggle_task(t),
         font=("Segoe UI", 13, "bold"),
-        bg=style["background"], fg=GREEN if task["done"] else BLUE,
-        relief="flat", bd=0, cursor="hand2"
+        bg=style["background"],
+        fg=GREEN if task["done"] else BLUE,
+        relief="flat",
+        bd=0,
+        cursor="hand2"
     ).pack(side="left", padx=(0, 8))
 
+    # Task title style
     title_color = MUTED if task["done"] else TEXT
-    title_font = ("Segoe UI", 11, "overstrike") if task["done"] else (
-        "Segoe UI", 11, "bold"
+
+    title_font = (
+        ("Segoe UI", 11, "overstrike")
+        if task["done"]
+        else ("Segoe UI", 11, "bold")
     )
 
+    # Task title
     tk.Label(
-        top, text=task["title"],
-        font=title_font, bg=style["background"], fg=title_color,
+        top,
+        text=task["title"],
+        font=title_font,
+        bg=style["background"],
+        fg=title_color,
         anchor="w"
     ).pack(side="left", fill="x", expand=True)
 
+    # Edit button
     tk.Button(
-        top, text="×", command=lambda t=task: delete_task(t),
-        font=("Segoe UI", 13), bg=style["background"], fg=MUTED,
-        relief="flat", bd=0, cursor="hand2"
+        top,
+        text="Edit",
+        command=lambda t=task: open_add_task(t),
+        font=("Segoe UI", 9, "bold"),
+        bg=style["background"],
+        fg=BLUE,
+        relief="flat",
+        bd=0,
+        cursor="hand2"
+    ).pack(side="right", padx=(0, 8))
+
+    # Delete button
+    tk.Button(
+        top,
+        text="×",
+        command=lambda t=task: delete_task(t),
+        font=("Segoe UI", 13),
+        bg=style["background"],
+        fg=MUTED,
+        relief="flat",
+        bd=0,
+        cursor="hand2"
     ).pack(side="right")
 
+    # Task details row
     details = tk.Frame(item, bg=style["background"])
     details.pack(fill="x", padx=(31, 0), pady=(5, 0))
 
+    # Category
     tk.Label(
         details,
         text=task["category"],
@@ -395,6 +538,7 @@ def task_card(parent, task):
         pady=3
     ).pack(side="left")
 
+    # Start time and due date
     tk.Label(
         details,
         text=f"  •  {task['time'] or 'No time set'}"
@@ -712,9 +856,9 @@ def select_calendar_day(day):
 
 
 # ---------------- ADD TASK WINDOW ----------------
-def open_add_task():
+def open_add_task(task_to_edit=None):
     dialog = tk.Toplevel(root)
-    dialog.title("Add Task")
+    dialog.title("Edit Task" if task_to_edit else "Add Task")
     dialog.geometry("560x680")
     dialog.minsize(440, 560)
     dialog.resizable(False, False)
@@ -723,7 +867,7 @@ def open_add_task():
     dialog.grab_set()
 
     tk.Label(
-        dialog, text="Add a Task",
+        dialog, text="Edit Task" if task_to_edit else "Add a Task",
         font=("Segoe UI", 18, "bold"), bg=WHITE, fg=TEXT
     ).pack(anchor="w", padx=24, pady=(22, 16))
 
@@ -820,6 +964,29 @@ def open_add_task():
     
     due_entry.configure(state="disabled")
 
+    
+    # Load existing task data when editing
+    if task_to_edit:
+        title_entry.delete(0, tk.END)
+        title_entry.insert(0, task_to_edit["title"])
+
+        category_box.set(task_to_edit["category"])
+
+        date_entry.set_date(
+            date.fromisoformat(task_to_edit["date"])
+        )
+
+        time_entry.delete(0, tk.END)
+        time_entry.insert(0, task_to_edit["time"])
+
+        if task_to_edit["due"]:
+            due_enabled.set(True)
+            due_entry.configure(state="normal")
+            due_entry.set_date(
+                date.fromisoformat(task_to_edit["due"])
+            )
+
+    
     def save_task():
         title = title_entry.get().strip()
         task_date = date_entry.get_date().isoformat()
@@ -827,7 +994,11 @@ def open_add_task():
         due = due_entry.get_date().isoformat() if due_enabled.get() else ""
 
         if not title:
-            messagebox.showwarning("Missing task", "Enter a task name.", parent=dialog)
+            messagebox.showwarning(
+                "Missing task",
+                "Enter a task name.",
+                parent=dialog
+            )
             return
 
         try:
@@ -841,14 +1012,23 @@ def open_add_task():
             )
             return
 
-        tasks.append({
-            "title": title,
-            "category": category_box.get(),
-            "date": task_date,
-            "time": task_time,
-            "due": due,
-            "done": False,
-        })
+        if task_to_edit is None:
+            # Add a new task
+            tasks.append({
+                "title": title,
+                "category": category_box.get(),
+                "date": task_date,
+                "time": task_time,
+                "due": due,
+                "done": False,
+            })
+        else:
+            # Update the existing task
+            task_to_edit["title"] = title
+            task_to_edit["category"] = category_box.get()
+            task_to_edit["date"] = task_date
+            task_to_edit["time"] = task_time
+            task_to_edit["due"] = due
 
         save_tasks()
 
@@ -858,9 +1038,15 @@ def open_add_task():
         dialog.destroy()
         render()
 
-    styled_button(dialog, "Save Task", save_task, True).pack(
+    styled_button(
+        dialog,
+        "Save Changes" if task_to_edit else "Save Task",
+        save_task,
+        True
+    ).pack(
         fill="x", padx=24, pady=(10, 16), side="bottom"
     )
+
 
 
 # ---------------- FOCUS TIMER ----------------
@@ -984,17 +1170,20 @@ def timer_tick():
 
     remaining = max(0, int(end_time - time.monotonic() + 0.999))
     update_timer_display()
-
+   
     if remaining <= 0:
         timer_running = False
         commit_focus_time()
-        root.bell()
-        messagebox.showinfo(
-            "EVERYDAY",
+
+        show_windows_notification(
+            "ErrDay - Focus Complete",
             f"Focus session complete!\n"
-            f"Task: {timer_task_box.get() or 'General focus'}",
+            f"Task: {focus_task_at_start}",
         )
+
+        root.bell()
         return
+
 
     timer_job = root.after(250, timer_tick)
 
@@ -1261,5 +1450,86 @@ def render():
         render_month()
 
 
+# ---------------- SYSTEM TRAY ----------------
+
+tray_icon = None
+
+
+def create_tray_image():
+    image = Image.new("RGB", (64, 64), "#3478F6")
+    draw = ImageDraw.Draw(image)
+
+    # Simple ErrDay app icon
+    draw.rounded_rectangle(
+        (4, 4, 60, 60),
+        radius=12,
+        fill="#3478F6",
+    )
+
+    draw.text(
+        (18, 12),
+        "E",
+        fill="white",
+    )
+
+    return image
+
+
+def restore_window(icon=None, item=None):
+    root.after(0, show_main_window)
+
+
+def show_main_window():
+    root.deiconify()
+    root.lift()
+    root.focus_force()
+
+
+def exit_application(icon=None, item=None):
+    global tray_icon
+
+    if tray_icon is not None:
+        tray_icon.stop()
+        tray_icon = None
+
+    root.after(0, root.destroy)
+
+
+def minimize_to_tray():
+    root.withdraw()
+
+
+def setup_system_tray():
+    global tray_icon
+
+    menu = pystray.Menu(
+        pystray.MenuItem(
+            "Open ErrDay",
+            restore_window,
+            default=True,
+        ),
+        pystray.MenuItem(
+            "Exit",
+            exit_application,
+        ),
+    )
+
+    tray_icon = pystray.Icon(
+        "ErrDay",
+        create_tray_image(),
+        "ErrDay",
+        menu,
+    )
+
+    tray_icon.run_detached()
+
+
+root.protocol(
+    "WM_DELETE_WINDOW",
+    minimize_to_tray,
+)
+
+setup_system_tray()
 render()
+check_task_notifications()
 root.mainloop()
