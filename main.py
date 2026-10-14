@@ -77,9 +77,23 @@ def init_database():
                 task_date TEXT NOT NULL,
                 task_time TEXT NOT NULL DEFAULT '',
                 due_date TEXT NOT NULL DEFAULT '',
-                done INTEGER NOT NULL DEFAULT 0
+                done INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'Medium'
             )
         """)
+
+        columns = [
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(tasks)"
+            ).fetchall()
+        ]
+
+        if "priority" not in columns:
+            conn.execute("""
+                ALTER TABLE tasks
+                ADD COLUMN priority TEXT NOT NULL DEFAULT 'Medium'
+            """)
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS focus_sessions (
@@ -116,7 +130,7 @@ def load_tasks():
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT title, category, task_date,
-                   task_time, due_date, done
+                   task_time, due_date, done, priority
             FROM tasks
             ORDER BY task_date, task_time, id
         """).fetchall()
@@ -129,6 +143,7 @@ def load_tasks():
             "time": row[3],
             "due": row[4],
             "done": bool(row[5]),
+            "priority": row[6],
         }
         for row in rows
     ]
@@ -140,8 +155,8 @@ def save_tasks():
 
         conn.executemany("""
             INSERT INTO tasks
-                (title, category, task_date, task_time, due_date, done)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (title, category, task_date, task_time, due_date, done, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, [
             (
                 task["title"],
@@ -150,6 +165,7 @@ def save_tasks():
                 task["time"],
                 task["due"],
                 int(task["done"]),
+                task.get("priority", "Medium"),
             )
             for task in tasks
         ])
@@ -375,7 +391,7 @@ tk.Label(
 ).pack(side="left")
 
 tk.Label(
-    header, text="집중해라, 오늘도, 집중하자!!!",
+    header, text="Do Some Work Bro!",
     font=("Segoe UI", 10), bg=BG, fg=MUTED
 ).pack(side="right", pady=10)
 
@@ -496,6 +512,53 @@ def task_card(parent, task):
         fg=title_color,
         anchor="w"
     ).pack(side="left", fill="x", expand=True)
+
+    
+    # Priority / status badge
+    priority = task.get("priority", "Medium")
+
+    if task["done"]:
+        badge_text = "DONE"
+        badge_color = "#16A34A"
+    elif task.get("due"):
+        try:
+            due_date = date.fromisoformat(task["due"])
+
+            if due_date < today:
+                badge_text = "! OVERDUE"
+                badge_color = "#7C3AED"
+            else:
+                badge_text = priority.upper()
+                badge_color = {
+                    "High": "#DC2626",
+                    "Medium": "#D97706",
+                    "Low": "#64748B"
+                }.get(priority, "#D97706")
+        except ValueError:
+            badge_text = priority.upper()
+            badge_color = {
+                "High": "#DC2626",
+                "Medium": "#D97706",
+                "Low": "#64748B"
+            }.get(priority, "#D97706")
+    else:
+        badge_text = priority.upper()
+        badge_color = {
+            "High": "#DC2626",
+            "Medium": "#D97706",
+            "Low": "#64748B"
+        }.get(priority, "#D97706")
+
+    tk.Label(
+        top,
+        text=badge_text,
+        font=("Segoe UI", 8, "bold"),
+        bg=badge_color,
+        fg="white",
+        padx=7,
+        pady=3
+    ).pack(side="right", padx=(0, 8))
+
 
     # Edit button
     tk.Button(
@@ -741,6 +804,7 @@ def render_week():
 
 
 # ---------------- MONTH VIEW ----------------
+
 def render_month():
     year = today.year
     month = today.month + month_offset
@@ -748,6 +812,7 @@ def render_month():
     while month > 12:
         year += 1
         month -= 12
+
     while month < 1:
         year -= 1
         month += 12
@@ -755,17 +820,13 @@ def render_month():
     top = tk.Frame(content, bg=BG)
     top.pack(fill="x", pady=(0, 12))
 
-    
-    # Fixed-width month navigation
+    # Month navigation
     month_controls = tk.Frame(top, bg=BG)
     month_controls.pack(anchor="center")
-
     month_controls.grid_columnconfigure(1, minsize=220)
 
     styled_button(
-        month_controls,
-        "‹",
-        lambda: shift_month(-1),
+        month_controls, "‹", lambda: shift_month(-1)
     ).grid(row=0, column=0, sticky="ew")
 
     tk.Label(
@@ -775,25 +836,28 @@ def render_month():
         bg=BG,
         fg=TEXT,
         width=18,
-        anchor="center",
+        anchor="center"
     ).grid(row=0, column=1, padx=14)
 
     styled_button(
-        month_controls,
-        "›",
-        lambda: shift_month(1),
+        month_controls, "›", lambda: shift_month(1)
     ).grid(row=0, column=2, sticky="ew")
 
-
+    # Calendar grid
     month_grid = tk.Frame(content, bg=BG)
     month_grid.pack(fill="both", expand=True)
 
-    for col, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+    for col, name in enumerate(
+        ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    ):
         month_grid.columnconfigure(col, weight=1)
 
         tk.Label(
-            month_grid, text=name,
-            font=("Segoe UI", 9, "bold"), bg=BG, fg=MUTED
+            month_grid,
+            text=name,
+            font=("Segoe UI", 9, "bold"),
+            bg=BG,
+            fg=MUTED
         ).grid(row=0, column=col, sticky="ew", pady=(0, 7))
 
     weeks = calendar.monthcalendar(year, month)
@@ -803,43 +867,143 @@ def render_month():
 
         for col, day_num in enumerate(week):
             cell = tk.Frame(
-                month_grid, bg=WHITE,
-                highlightbackground=BORDER, highlightthickness=1
+                month_grid,
+                bg=WHITE,
+                highlightbackground=BORDER,
+                highlightthickness=1
             )
+
             cell.grid(
-                row=row, column=col, sticky="nsew",
-                padx=2, pady=2
+                row=row,
+                column=col,
+                sticky="nsew",
+                padx=2,
+                pady=2
             )
 
             if day_num == 0:
                 continue
 
             day = date(year, month, day_num)
-            day_tasks = [t for t in tasks if t["date"] == day.isoformat()]
+            day_iso = day.isoformat()
+
+            day_tasks = [
+                t for t in tasks if t["date"] == day_iso
+            ]
+
+            # Highlight today's date
+            is_today = day == today
 
             day_button = tk.Button(
-                cell, text=str(day_num),
+                cell,
+                text=str(day_num),
                 command=lambda d=day: select_calendar_day(d),
-                font=("Segoe UI", 10, "bold" if day == today else "normal"),
-                bg=WHITE, fg=BLUE if day == today else TEXT,
+                font=(
+                    "Segoe UI",
+                    10,
+                    "bold" if is_today else "normal"
+                ),
+                bg="#EAF1FF" if is_today else WHITE,
+                fg=BLUE if is_today else TEXT,
                 activebackground="#EAF1FF",
-                relief="flat", bd=0, cursor="hand2"
+                relief="flat",
+                bd=0,
+                cursor="hand2"
             )
             day_button.pack(anchor="nw", padx=4, pady=3)
 
-            for task in day_tasks[:2]:
-                tk.Label(
-                    cell, text="• " + task["title"][:15],
-                    font=("Segoe UI", 8),
-                    bg=WHITE, fg=GREEN if task["done"] else BLUE,
-                    anchor="w"
-                ).pack(fill="x", padx=4)
+            # Show up to two tasks
+            for task in sorted(
+                day_tasks,
+                key=lambda t: t["time"] or "99:99"
+            )[:2]:
 
+                
+                # Determine task label colour and status
+                priority = task.get("priority", "Medium")
+
+                if task["done"]:
+                    # Completed tasks are always green
+                    task_color = GREEN
+                    status_text = ""
+                else:
+                    # Priority colours
+                    priority_colors = {
+                        "High": "#DC2626",
+                        "Medium": "#D97706",
+                        "Low": "#64748B"
+                    }
+
+                    task_color = priority_colors.get(
+                        priority, "#D97706"
+                    )
+                    status_text = ""
+
+                    # Overdue status overrides priority colour
+                    if task["due"]:
+                        try:
+                            due_date = date.fromisoformat(
+                                task["due"]
+                            )
+
+                            if due_date < today:
+                                task_color = "#7C3AED"
+                                status_text = "! OVERDUE "
+
+                        except ValueError:
+                            pass
+
+
+                # Show start time when available
+                time_text = (
+                    f"{task['time']} "
+                    if task["time"] else ""
+                )
+
+                
+                
+                # Show priority/status in the month calendar
+                if task["done"]:
+                    badge_text = "[DONE] "
+                elif status_text:
+                    badge_text = "[! OVERDUE] "
+                else:
+                    badge_text = f"[{priority.upper()}] "
+
+                task_text = (
+                    f"• {time_text}{badge_text}"
+                    f"{task['title'][:8]}"
+                )
+
+
+
+                task_label = tk.Label(
+                    cell,
+                    text=task_text,
+                    font=("Segoe UI", 8),
+                    bg=WHITE,
+                    fg=task_color,
+                    anchor="w",
+                    cursor="hand2"
+                )
+                task_label.pack(fill="x", padx=4)
+
+                # Click a task to open that day's task list
+                task_label.bind(
+                    "<Button-1>",
+                    lambda event, d=day: select_calendar_day(d)
+                )
+
+            # Indicate additional tasks
             if len(day_tasks) > 2:
                 tk.Label(
-                    cell, text=f"+{len(day_tasks)-2} more",
-                    font=("Segoe UI", 8), bg=WHITE, fg=MUTED
+                    cell,
+                    text=f"+{len(day_tasks) - 2} more",
+                    font=("Segoe UI", 8),
+                    bg=WHITE,
+                    fg=MUTED
                 ).pack(anchor="w", padx=4)
+
 
 
 def shift_month(amount):
@@ -899,6 +1063,24 @@ def open_add_task(task_to_edit=None):
         bg=WHITE, fg=MUTED
     ).pack(anchor="w", pady=(10, 4))
     category_box.pack(fill="x")
+
+    # Priority
+    tk.Label(
+        fields,
+        text="Priority",
+        font=("Segoe UI", 9, "bold"),
+        bg=WHITE,
+        fg=MUTED
+    ).pack(anchor="w", pady=(10, 4))
+
+    priority_box = ttk.Combobox(
+        fields,
+        values=("High", "Medium", "Low"),
+        state="readonly",
+        font=("Segoe UI", 10)
+    )
+    priority_box.set("Medium")
+    priority_box.pack(fill="x")
 
     tk.Label(
         fields,
@@ -972,6 +1154,10 @@ def open_add_task(task_to_edit=None):
 
         category_box.set(task_to_edit["category"])
 
+        priority_box.set(
+            task_to_edit.get("priority", "Medium")
+        )
+
         date_entry.set_date(
             date.fromisoformat(task_to_edit["date"])
         )
@@ -1021,6 +1207,7 @@ def open_add_task(task_to_edit=None):
                 "time": task_time,
                 "due": due,
                 "done": False,
+                "priority": priority_box.get(),
             })
         else:
             # Update the existing task
@@ -1029,7 +1216,7 @@ def open_add_task(task_to_edit=None):
             task_to_edit["date"] = task_date
             task_to_edit["time"] = task_time
             task_to_edit["due"] = due
-
+            task_to_edit["priority"] = priority_box.get()
         save_tasks()
 
         global selected_date
