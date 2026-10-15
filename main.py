@@ -416,7 +416,7 @@ tk.Label(
 ).pack(side="left")
 
 tk.Label(
-    header, text="Do Some Work Bro!",
+    header, text="Your Personal Task Manager",
     font=("Segoe UI", 10), bg=BG, fg=MUTED
 ).pack(side="right", pady=10)
 
