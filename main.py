@@ -43,7 +43,6 @@ CATEGORY_STYLES = {
     },
 }
 
-
 root = tk.Tk()
 root.title("ErrDay")
 root.geometry("1440x1024")
@@ -54,17 +53,38 @@ today = date.today()
 selected_date = today
 view = "Today"
 
+# ---------------- DATABASE PATH ----------------
 
-# ---------------- DATABASE ----------------
+import sys
 
-APP_DATA_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-    "ErrDay"
-)
+# Use the folder containing the executable when packaged.
+# Use the folder containing the Python file during development.
 
-os.makedirs(APP_DATA_DIR, exist_ok=True)
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DB_PATH = os.path.join(APP_DATA_DIR, "errday.db")
+DB_PATH = os.path.join(APP_DIR, "errday.db")
+BACKUP_DB_PATH = os.path.join(APP_DIR, "errday_backup.db")
+
+# ---------------- APP ICON ----------------
+ICON_PATH = os.path.join(APP_DIR, "errday_icon.ico")
+
+try:
+    root.iconbitmap(ICON_PATH)
+except Exception as e:
+    print(f"App icon setup failed: {e}")
+
+
+def backup_database():
+    """Create/update a backup of the complete SQLite database."""
+    if not os.path.exists(DB_PATH):
+        return
+
+    with sqlite3.connect(DB_PATH) as source_conn:
+        with sqlite3.connect(BACKUP_DB_PATH) as backup_conn:
+            source_conn.backup(backup_conn)
 
 
 def init_database():
@@ -151,6 +171,7 @@ def load_tasks():
 
 def save_tasks():
     with sqlite3.connect(DB_PATH) as conn:
+        
         conn.execute("DELETE FROM tasks")
 
         conn.executemany("""
@@ -169,6 +190,8 @@ def save_tasks():
             )
             for task in tasks
         ])
+
+    backup_database()
 
 def get_focus_seconds_for_day(day):
     with sqlite3.connect(DB_PATH) as conn:
@@ -216,8 +239,8 @@ def format_focus_duration(seconds):
     return f"{minutes} min"
 
 
-
 init_database()
+backup_database()
 tasks = load_tasks()
 
 
@@ -282,6 +305,8 @@ def send_task_reminder(task, reminder_minutes):
 
         if cursor.rowcount == 0:
             return
+        
+    backup_database()
 
     if reminder_minutes == 30:
         message = f"{task['title']} starts in 30 minutes."
@@ -1339,6 +1364,7 @@ def commit_focus_time():
                     focus_date_at_start,
                     elapsed,
                 ))
+            backup_database()
 
             total_focus_seconds += elapsed
 
@@ -1636,31 +1662,26 @@ def render():
     else:
         render_month()
 
-
 # ---------------- SYSTEM TRAY ----------------
 
 tray_icon = None
 
-
 def create_tray_image():
-    image = Image.new("RGB", (64, 64), "#3478F6")
-    draw = ImageDraw.Draw(image)
+    try:
+        return Image.open(ICON_PATH).convert("RGBA")
+    except Exception as e:
+        print(f"Tray icon loading failed: {e}")
 
-    # Simple ErrDay app icon
-    draw.rounded_rectangle(
-        (4, 4, 60, 60),
-        radius=12,
-        fill="#3478F6",
-    )
-
-    draw.text(
-        (18, 12),
-        "E",
-        fill="white",
-    )
-
-    return image
-
+        # Fallback icon if the ICO file is missing
+        image = Image.new("RGBA", (64, 64), "#3478F6")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle(
+            (4, 4, 60, 60),
+            radius=12,
+            fill="#3478F6",
+        )
+        draw.text((18, 12), "E", fill="white")
+        return image
 
 def restore_window(icon=None, item=None):
     root.after(0, show_main_window)
